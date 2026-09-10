@@ -119,3 +119,4 @@ id | quiz_id | text
 quiz.getQuestions().get(0).getCorrectAnswer().getText();
 ```
 - However in the relational world, we have to join each table to navigate into its contents. Which is a costly operation and can mean a new network call going on to DB.
+
