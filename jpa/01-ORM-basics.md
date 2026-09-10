@@ -120,3 +120,6 @@ quiz.getQuestions().get(0).getCorrectAnswer().getText();
 ```
 - However in the relational world, we have to join each table to navigate into its contents. Which is a costly operation and can mean a new network call going on to DB.
 
+### Conclusion
+- All of this comes from one root issue object is graph-like, which can point to the next object and then the next object and then the next object. A relational table is a two-dimensional flat table.
+- If we are doing anything graph-like, that doesn't go well with tables. 
