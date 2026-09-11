@@ -58,3 +58,6 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 ```
+
+### Note, choose right:
+ORM for transactional CRUD on an object graph. JDBC / jOOQ / native SQL for reporting, bulk updates, and anything where the query shape matters more than the object shape. Mixing is normal and correct, not a failure. Both share the same transaction and connection under JpaTransactionManager.
