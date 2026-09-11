@@ -1,0 +1,99 @@
+This is directly relevant to your FundsLedger work — concurrent balance updates are exactly the scenario optimistic locking is built for. Let's build it up from the problem it solves.
+
+The problem: lost updates under concurrency
+
+Imagine two concurrent requests both touch the same FundsLedger row — say, a bet settlement crediting winnings and a withdrawal request debiting funds, racing against each other:
+
+Time  Thread A (settle bet)              Thread B (withdrawal)
+t1    SELECT balance FROM funds_ledger
+      WHERE id=42  → reads 100.00
+t2                                        SELECT balance FROM funds_ledger
+                                           WHERE id=42  → reads 100.00
+t3    balance = 100.00 + 50.00 = 150.00
+t4                                        balance = 100.00 - 30.00 = 70.00
+t5    UPDATE funds_ledger SET balance=150.00
+      WHERE id=42
+t6                                        UPDATE funds_ledger SET balance=70.00
+                                           WHERE id=42
+
+Thread B's write silently overwrites Thread A's — the final balance is 70.00, but it should have reflected both changes (120.00). Neither transaction did anything individually wrong; each read a value, computed a new value, wrote it back. This is the classic lost update problem, and in a regulated ledger system it's not a theoretical concern — it's the exact bug that produces balance discrepancies auditors flag.
+
+Two families of solutions
+Pessimistic locking: prevent the race from happening at all, by holding a database-level lock (SELECT ... FOR UPDATE) for the duration of the read-modify-write cycle, forcing Thread B to wait until Thread A commits.
+Optimistic locking: let both transactions proceed without locking, but detect at write time whether the row changed since you read it, and fail the write if so — "optimistic" because it bets that conflicts are rare, and pays the cost only when a conflict actually occurs, rather than paying a locking cost on every read.
+
+@Version implements the optimistic strategy.
+
+The mechanism
+java
+@Entity
+public class FundsLedger {
+    @Id
+    private Long id;
+
+    private BigDecimal balance;
+
+    @Version
+    private Long version;
+}
+
+What Hibernate adds:
+
+A version column in the table (version BIGINT), starting at some initial value (typically 0) when the row is first inserted.
+Every UPDATE statement gets the version appended to the WHERE clause, and the version is incremented in the SET clause:
+sql
+UPDATE funds_ledger
+SET balance = ?, version = ?      -- new version = old version + 1
+WHERE id = ? AND version = ?      -- old version, the one this transaction read
+Hibernate checks the affected row count returned by the JDBC driver after executing that UPDATE. If it's 1, the update succeeded — nobody else changed the row between your read and your write, so the WHERE version = ? condition still matched. If it's 0, that means some other transaction already updated the row and bumped the version since you read it — your WHERE version = ? condition no longer matches any row, the UPDATE affects zero rows, and Hibernate throws OptimisticLockException (wrapped as ObjectOptimisticLockingFailureException in Spring Data).
+
+Replaying the earlier race with @Version in play:
+
+Time  Thread A                                  Thread B
+t1    SELECT balance, version FROM funds_ledger
+      WHERE id=42 → balance=100.00, version=5
+t2                                              SELECT balance, version FROM funds_ledger
+                                                 WHERE id=42 → balance=100.00, version=5
+t3    balance = 150.00
+t4                                              balance = 70.00
+t5    UPDATE funds_ledger SET balance=150.00, version=6
+      WHERE id=42 AND version=5
+      → 1 row affected, commits successfully
+t6                                              UPDATE funds_ledger SET balance=70.00, version=6
+                                                 WHERE id=42 AND version=5
+                                                 → 0 rows affected (version is now 6, not 5)
+                                                 → OptimisticLockException thrown
+
+Thread B's transaction fails loudly instead of silently corrupting data. Your application code catches that exception and decides what to do — typically: reload the row, reapply the business logic against the current state, retry.
+
+Why this connects to dirty checking (tying back to earlier in this conversation)
+
+This slots directly into the flush mechanism we discussed at the start. Recall: Hibernate doesn't issue an UPDATE the moment you call a setter — it issues one at flush time, based on what the persistence context's dirty-checking detected changed. The version check is bolted onto that same generated UPDATE statement — it's not a separate query, not a separate round trip. The WHERE version = ? clause and the SET version = ? increment are simply additional clauses Hibernate adds onto the UPDATE it was already going to generate from dirty-checking. This is a good concrete example of "leaky abstraction" from your last question, in reverse — here the abstraction genuinely does hide a meaningful amount of correct, non-trivial concurrency-control SQL from you, and you get it just by adding one annotation.
+
+Requirements and constraints on @Version
+Must be Long/Integer (wrapper or primitive), short, Timestamp, or Instant — numeric types are by far the most common and unambiguous choice
+Never manually set the version field in application code — Hibernate owns incrementing it entirely; manual interference breaks the whole mechanism
+Every entity you want optimistic protection on needs its own @Version field — it's per-entity, not global
+If a detached entity is merged back with a stale version value (e.g., an entity loaded, sent to a client as a DTO edited over multiple screens, then reattached and saved later), the version check still fires correctly — this is actually one of the most valuable properties of this pattern, since it protects against conflicts across not just concurrent threads but across entire user think-time, e.g., two ops staff both pulling up the same FundsLedger admin screen and editing it minutes apart.
+Where @Version naturally fits in your FundsLedger design
+
+Given your four-bucket ledger model, this is exactly the kind of entity where you'd want @Version on any row that's subject to concurrent mutation from multiple flows — bet settlement, withdrawal processing, bonus crediting, all potentially racing against the same ledger row. A typical pattern:
+
+java
+@Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 3)
+@Transactional
+public void debit(Long ledgerId, BigDecimal amount) {
+    FundsLedger ledger = ledgerRepo.findById(ledgerId).orElseThrow();
+    ledger.debit(amount);          // dirty-checked, version-guarded UPDATE at flush
+    ledgerRepo.save(ledger);
+}
+
+The retry wrapper (Spring Retry, or a manual retry loop) is standard practice alongside optimistic locking — a conflict is expected and recoverable, not a fatal error, so the usual pattern is catch, reload fresh state, reapply, retry, bounded by a max-attempts guard.
+
+Optimistic vs. pessimistic — when each fits
+Optimistic (@Version): low-to-moderate contention, where most concurrent transactions touch different rows and conflicts on the same row are rare — good throughput, no blocking, cost paid only on actual conflict. Good default for most business entities.
+Pessimistic (@Lock(LockModeType.PESSIMISTIC_WRITE), → SELECT ... FOR UPDATE): high contention on the same row expected, or when a retry-on-conflict pattern is operationally undesirable (e.g., a single hot ledger row processing many small sequential debits where you'd rather serialize access than have most attempts fail and retry). Costs throughput (transactions queue and wait) but guarantees no wasted work from failed optimistic attempts.
+
+For something like a FundsLedger row that could plausibly see genuine hot-row contention (a popular quiz's prize pool ledger, settling many simultaneous winners against one account), it's worth explicitly reasoning about which regime you're in rather than defaulting to optimistic everywhere — optimistic locking assumes conflicts are the exception, and if your access pattern makes conflicts routine, you'll pay repeated retry costs that pessimistic locking would have avoided by simply serializing access up front.
+
+
