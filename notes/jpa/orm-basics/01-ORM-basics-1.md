@@ -11,11 +11,15 @@ id | username | balance
 
 A corresponding player object looks as below.
 ```java
-class Player { Long id; String username; BigDecimal balance; }
+class Player { 
+  Long id; 
+  String username; 
+  BigDecimal balance; 
+}
 ``` 
 
 - We have a row in the database disk and a corresponding object on the Java side.
-- Each of these can't read each other, as they are sitting in different servers/systems. 
+- Each of these can't read other, as they are sitting in different servers/systems. 
 - Something must pass values between these two and remember which object belongs to which role. 
 
 -- Revisit persistence context. 

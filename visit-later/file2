@@ -1,0 +1,35 @@
+Good catch — and the framing needs correcting first: this was never a "multiple candidate beans, disambiguate with `@Qualifier`" situation. It's a completely different resolution path that bypasses normal type-based bean lookup entirely.
+
+**Two separate annotations get conflated here**
+
+`@PersistenceContext` and `@Autowired` are not interchangeable for `EntityManager`, even though people casually say "autowired the EntityManager."
+
+- `@PersistenceContext` is processed by `PersistenceAnnotationBeanPostProcessor` (JPA-specific, part of `orm.jpa`).
+- `@Autowired` is processed by `AutowiredAnnotationBeanPostProcessor` (generic Spring DI, does a `getBean()`-style type lookup against the `BeanFactory`).
+
+If you write plain `@Autowired private EntityManager em;` with nothing else, Spring Boot's `JpaBaseConfiguration` does **not** publish an `EntityManager`-typed bean into the container. There's no bean to find. It would throw `NoSuchBeanDefinitionException` unless something elsewhere explicitly registers one. So in practice, when this "just works," it's because the field is `@PersistenceContext`, not `@Autowired` — the notes shorthand it as "autowired" but the mechanism is JPA's own injection, not Spring's.
+
+**What `PersistenceAnnotationBeanPostProcessor` actually does**
+
+It doesn't go through `getBean()` candidate resolution at all. During bean post-processing, it reflectively scans for fields/methods annotated `@PersistenceContext`, and for each one it:
+
+1. Looks up the `EntityManagerFactory` bean (by type — or by `unitName` if there are several).
+2. Calls `SharedEntityManagerCreator.createSharedEntityManager(emf)` right there, manually, at post-processing time.
+3. Sets that proxy directly onto the field via reflection.
+
+That proxy object never lived in the `BeanFactory` as a registered singleton the way `@Service` beans do. It's manufactured per injection point by the BPP and assigned directly. So there was never an "ambiguous candidate set" for Spring's container to resolve — the whole `@Qualifier` mental model doesn't apply because normal candidate resolution never runs.
+
+**Where disambiguation *does* happen**
+
+The real analog to your multi-bean/`@Qualifier` scenario shows up one level up, at the `EntityManagerFactory`, not the `EntityManager`. If you have multiple persistence units (multiple `LocalContainerEntityManagerFactoryBean`s, e.g. one per database), then:
+
+```java
+@PersistenceContext(unitName = "quizStakesLedgerPU")
+private EntityManager em;
+```
+
+`unitName` is JPA's own disambiguation attribute, resolved by `PersistenceAnnotationBeanPostProcessor` itself — it's not Spring's `@Qualifier` mechanism, even though it plays the same role. With one persistence unit (the common case), there's nothing to disambiguate, so it's omitted.
+
+**Tying back to the ThreadLocal point**
+
+So the correct mental model is: exactly **one proxy instance** gets manufactured per injection point, once, at context-startup post-processing time. It behaves like a singleton from then on — same object reference injected everywhere. The "different EntityManager per thread" behavior isn't about DI producing different instances; it's what that one proxy's `InvocationHandler` does *after* injection, on every method call, by consulting `TransactionSynchronizationManager`'s `ThreadLocal` map. DI multiplicity and runtime dispatch multiplicity are two different layers, and it's easy to conflate them because both involve "picking the right one."

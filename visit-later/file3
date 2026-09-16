@@ -1,0 +1,29 @@
+This maps well onto the JPA/Hibernate work you've been doing — let's go through why each piece is there and where it bites people.
+
+## Why spring-orm and spring-aspects are in the chain
+
+`spring-orm` is the glue: it gives you `LocalContainerEntityManagerFactoryBean`, `JpaTransactionManager`, and the exception-translation layer that turns Hibernate's checked exceptions into Spring's `DataAccessException` hierarchy. Without it, Spring wouldn't know how to hand you an `EntityManager` bound to a Spring-managed transaction.
+
+`spring-aspects` is the less obvious one — it's there for AspectJ-based `@Configurable` support, so entities instantiated outside the container (e.g. `new LedgerTransaction()` inside Hibernate's own instantiation, not via `new` in Spring code) can still get field injection if you use load-time weaving. Almost nobody in a Spring Boot app actually uses this path, but it's pulled in because the starter can't know that in advance.
+
+## What you add, and why Boot won't guess it for you
+
+- **JDBC driver** — Boot has no way to know if `FundsLedger` lives in Postgres, Oracle, or H2. This is a pure "you decide" dependency.
+- **Flyway/Liquibase** — schema evolution is a business decision (do you use `ddl-auto=validate` in prod, migrate manually, etc.), so Boot won't pick one for you.
+- **hibernate-jpamodelgen** — an annotation processor (APT), not a runtime library. At compile time it scans your `@Entity` classes and emits a static metamodel class per entity — `FundsLedger_`, `LedgerTransaction_`, `PaymentAttempt_` — each with typed static fields like `LedgerTransaction_.amount` of type `SingularAttribute<LedgerTransaction, BigDecimal>`. These exist purely so Criteria queries and `Specification<T>` lambdas can reference fields without magic strings.
+
+## The trap, mechanically
+
+`Player_.username` (or in your case `LedgerTransaction_.status`) isn't a runtime lookup failure — it's a **compile-time symbol resolution failure**. If `hibernate-jpamodelgen` isn't on the annotation processor path (Maven: `annotationProcessorPaths` in `maven-compiler-plugin`; Gradle: `annotationProcessor` config), the processor never runs, `target/generated-sources/annotations` stays empty, and `LedgerTransaction_` simply doesn't exist as a class. Your IDE and the compiler both say "cannot find symbol" — it looks like a Hibernate config problem but it's a build-tool wiring problem. Worth double-checking your `pom.xml`/`build.gradle` has it declared separately from `hibernate-core`, since Maven doesn't auto-promote a transitive dep into the annotation processor path even if it's on the classpath.
+
+**hibernate-envers** is worth calling out for QuizStakes specifically: for a regulated ledger, "who changed this row and when" isn't optional — envers gives you `@Audited` on `FundsLedger`/`LedgerTransaction` and auto-generates `_AUD` shadow tables with revision tracking, which is close to what a compliance auditor would ask for anyway.
+
+**JCache provider** — Hibernate's L2 cache is just an SPI; it delegates to whatever JSR-107 (JCache) implementation you put on the classpath — Ehcache, Caffeine, Hazelcast. No provider means `hibernate.cache.use_second_level_cache=true` throws at startup because there's nothing to bind to.
+
+## The BOM mechanism
+
+When you don't specify a version for `hibernate-core` in your POM, Maven resolves it from `spring-boot-dependencies` (the BOM) that `spring-boot-starter-parent` imports. That's a `<dependencyManagement>` entry, not a hardcoded default — so if you *do* override it (`<hibernate.version>` property or explicit version), you're opting out of Boot's tested compatibility matrix. This matters because Boot's own integration tests only validate the specific Hibernate/Spring Data JPA/Spring Framework combination in that BOM — override the Hibernate version and you're on your own for the `ConnectionProvider`/`Dialect` interactions you've been digging into.
+
+Your table checks out against what I'd expect — Boot 3.4/3.5 on Hibernate 6.6 lines up with the reference suite you built. One thing worth flagging: Boot 4.0 landing on Hibernate 7.x / JPA 3.2 is recent enough (post my reliable cutoff) that I'd verify the exact minor version pairing if you're about to touch it, rather than trusting either of our memories on that row.
+
+Want to go deeper on any one of these — e.g., how `Specification<LedgerTransaction>` actually consumes the `_` metamodel classes under the hood, or how envers' revision entities interact with your four-bucket ledger model?
