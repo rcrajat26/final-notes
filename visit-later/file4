@@ -1,0 +1,89 @@
+Flush internals
+Good area to nail down — this is where all the "dirty checking" and "cascade" theory from earlier actually gets executed. Let me build it up in layers: the event flow, then the two preparation passes, then the actual dirty-check/schedule step, then the ActionQueue ordering itself (with the *why*, not just the *what*), and a few loose ends that trip people up (auto-flush, IDENTITY's special case, batching).
+
+## 1. The event flow
+
+`Session.flush()` doesn't do the work itself — it fires a `FlushEvent` through the listener chain:
+
+```
+Session.flush()
+  → FlushEventListener.onFlush(FlushEvent)   [DefaultFlushEventListener]
+      → interceptor.preFlush(entities)
+      → flushEverythingToExecutions(event)   [AbstractFlushingEventListener]
+      → performExecutions(session)
+      → postFlush(session)
+      → interceptor.postFlush(entities)
+```
+
+`flushEverythingToExecutions` is the "figure out what needs to happen" phase. `performExecutions` is the "actually hit the database" phase. Splitting these matters: everything gets *scheduled* as an `Executable` action first, then the whole batch is executed together in a fixed order — this is what lets Hibernate reorder your inserts/updates/deletes independently of the order you called `persist`/`merge`/`remove` in your code.
+
+## 2. `flushEverythingToExecutions`, step by step
+
+```java
+prepareEntityFlushes(session, persistenceContext);
+prepareCollectionFlushes(persistenceContext);
+flushEntities(event, persistenceContext);
+flushCollections(session, persistenceContext);
+logFlushResults(event);
+```
+
+**`prepareEntityFlushes` (cascade traversal)** — walks every managed `EntityEntry` in the `PersistenceContext` and runs `Cascade.cascade(CascadingActions.SAVE_UPDATE, ...)` over its associations. This is "cascade-on-flush," distinct from cascade-on-`persist()`. Concretely: if your `Client` has `cascade = CascadeType.PERSIST` on its `accounts` collection, and you do
+
+```java
+Client client = em.find(Client.class, 1L);
+client.getAccounts().add(new Account(...));   // never explicitly persisted
+```
+
+it's *this step*, not your `add()` call, that notices the new transient `Account` is reachable and schedules it for insertion. It's also the step that walks orphan-removal-eligible collections and diffs current contents against the loaded snapshot to find removed elements that need deleting.
+
+**`prepareCollectionFlushes`** — for every `CollectionEntry`, calls `Collections.processReachableCollection(collection, session)`. This just marks collections as "seen this flush" and resolves their role/key against the owning entity — it doesn't decide dirtiness yet, it sets up bookkeeping so the next step can.
+
+**`flushEntities` — the actual dirty check.** For each `EntityEntry` with status `MANAGED` (not `READ_ONLY`, not `GONE`), Hibernate fires a `FlushEntityEvent` through `DefaultFlushEntityEventListener.onFlushEntity`, which:
+
+1. Gets the current state array via `EntityPersister.getPropertyValues(entity)`.
+2. Compares it field-by-field against `EntityEntry.loadedState` (the snapshot captured at load/flush time), using each property's `Type.isDirty(old, current, session)` — for basic types this is essentially `equals()`; for associations it compares FK/identifier, not the whole graph.
+3. Builds a `dirtyProperties` index array. If bytecode enhancement is active, the enhanced entity's own dirty-tracking interceptor can short-circuit this comparison — it already knows which fields were touched via generated setters, so Hibernate skips the snapshot diff entirely for that entity.
+4. If anything's dirty (or the entity is versioned and update is forced, e.g. `@OptimisticLock` semantics), it calls `session.getActionQueue().addAction(new EntityUpdateAction(...))`.
+
+So: **update actions are scheduled here**, not at `flush()` time in the way people picture "check everything." It's this per-entity snapshot comparison, once per flush, over every managed entity currently in the persistence context — which is exactly why a huge session with thousands of managed entities makes flush expensive regardless of how few actually changed.
+
+**`flushCollections`** — for each `PersistentCollection` wrapper, checks its dirty flag (set by wrapper methods like `add`/`remove` intercepting mutation) and schedules one of:
+- `CollectionRecreateAction` — collection was transient/uninitialized-then-replaced, needs full delete-all-then-insert-all
+- `CollectionRemoveAction` — collection reference nulled out or orphaned entirely
+- `CollectionUpdateAction` — rows added/removed within an existing collection
+- `QueuedOperationCollectionAction` — for `@LazyCollection(EXTRA)` collections where individual add/remove was queued without initializing the whole collection
+
+**`logFlushResults`** — pure diagnostics (counts of entities/collections processed), no functional effect.
+
+## 3. `performExecutions` → `ActionQueue.executeActions()`
+
+Everything scheduled above now sits in typed lists inside `ActionQueue` — `insertions`, `updates`, `deletions`, `collectionCreations`, `collectionUpdates`, `collectionRemovals`, `collectionQueuedOps`, `orphanRemovals`. `executeActions()` walks these lists in a **fixed order that is independent of scheduling order**:
+
+1. **`OrphanRemovalAction`**
+2. **`AbstractEntityInsertAction`** (`EntityInsertAction` / `EntityIdentityInsertAction`)
+3. **`EntityUpdateAction`**
+4. **`QueuedOperationCollectionAction`**
+5. **`CollectionRemoveAction`**
+6. **`CollectionUpdateAction`**
+7. **`CollectionRecreateAction`**
+8. **`EntityDeleteAction`**
+
+The ordering isn't arbitrary — each position solves a real constraint problem:
+
+- **Orphans first** — if a `Client`'s one-to-one `Account` was replaced (old one orphaned, new one inserted), the old row must be gone *before* the new insert runs, or you hit a unique-constraint violation on the FK/unique column the new row wants to occupy.
+- **Inserts before updates** — a brand-new `Account` needs its generated PK to exist before anything else can reference it (e.g. a collection-side FK update pointing at it). Within `insertions` itself, `InsertActionSorter` does a topological sort on FK dependencies between the entities being inserted — so if a new `Client` and a new `Account` are both pending, the `Client` insert is reordered before the `Account` insert even if you called `persist(account)` first, as long as `Account.client` is a not-null FK.
+- **Updates before collection actions** — parent-side state (including FK columns Hibernate might own on the "many" side, depending on mapping) needs to be settled before junction/collection rows sync.
+- **Queued ops → remove → update → recreate**, in that order, so incremental extra-lazy operations apply first, removals free up rows/slots, in-place updates run on what's left, and full recreates (the most destructive, delete-all-insert-all) go last among collection work.
+- **`EntityDeleteAction` dead last** — by the time an entity delete runs, every collection update that might have referenced it (nulling FKs, removing junction rows) has already executed, so the delete doesn't hit a FK constraint violation from a still-dangling reference.
+
+Concretely, in the Client-Account domain: if within one transaction you (a) remove an `Account` from `client.getAccounts()` where `orphanRemoval=true`, (b) add a new `Account`, and (c) change `client.email`, the executed order is: orphan-delete the old `Account` → insert the new `Account` → update `client.email` → update the `accounts` collection rows. Not the order you wrote the code in.
+
+## 4. Loose ends worth knowing
+
+**IDENTITY breaks the "schedule then execute" model.** Everything above assumes insert actions sit in the queue until flush. That's true for sequence/table generators (`EntityInsertAction`). But `EntityIdentityInsertAction` (used for `GenerationType.IDENTITY`) executes **immediately** at `addAction()` time, not deferred — because the identifier is only known after the DB round-trip, and Hibernate needs that identifier *now* to build the `EntityKey` and put the entity into the persistence context's identity map. This is the same fact from the GenerationType lesson, showing up again here as the reason IDENTITY can't batch inserts.
+
+**Auto-flush isn't "flush everything blindly before every query."** `Session.flush()` triggers explicitly, but queries can trigger an `AutoFlushEvent` first, gated by `FlushMode` (`AUTO`/`COMMIT`/`MANUAL`/`ALWAYS`). On `AUTO`, Hibernate checks whether the query's affected table spaces (`EntityPersister.getQuerySpaces()`) overlap with any pending dirty entity's tables — if a query only touches `Account` and your only pending dirty entity is an unrelated `Client`, the auto-flush is skipped entirely as an optimization.
+
+**Batching happens after the action lists, not per-action.** `performExecutions` finishes by calling into `JdbcCoordinator.executeBatch()`, which flushes any pending `PreparedStatement` batches (governed by `hibernate.jdbc.batch_size`). This is why insert/update/delete batching is a property of *statement execution*, not of the action-queue ordering — the ordering guarantees correctness, batching is a separate JDBC-level optimization layered underneath it.
+
+Want me to go one level deeper next — e.g. `InsertActionSorter`'s actual topological-sort algorithm, or how `OrphanRemovalAction` gets populated during cascade traversal (the exact snapshot-diff logic for detecting a removed collection element vs. a genuinely deleted entity)?
