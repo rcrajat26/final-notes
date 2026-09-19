@@ -1,0 +1,2 @@
+reflection example
+- There is a shell script, say s.sh, and there is a jar say, a.jar. A.jar can be of two different versions: 252 and 264. Now this .sh can have 252 or 264.jar and we will not know. v. In 262 a new custom exception class is created, say E.java. in s.sh will we have a check for a custom exception but if I add an import for a custom exception, it will fail for 252. So we can use reflection here, which will pass in 2064 and also not fail in 25.2
