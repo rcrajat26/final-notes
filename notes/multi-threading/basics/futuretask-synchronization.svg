@@ -1,0 +1,93 @@
+<svg viewBox="0 0 700 480" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="rgb(220, 220, 220)"/>
+    </marker>
+  </defs>
+
+  <!-- Background lanes -->
+  <rect x="20" y="20" width="300" height="400" fill="none" stroke="rgb(180, 180, 180)" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+  <rect x="400" y="20" width="280" height="400" fill="none" stroke="rgb(180, 180, 180)" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+
+  <!-- Lane labels -->
+  <text x="40" y="30" font-size="12" font-weight="600" fill="rgb(230, 230, 230)">Submitting Thread</text>
+  <text x="420" y="30" font-size="12" font-weight="600" fill="rgb(230, 230, 230)">Worker Thread</text>
+
+  <!-- STEP 1: Submit -->
+  <rect x="40" y="60" width="240" height="50" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="160" y="75" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">submit(callable)</text>
+  <text x="160" y="92" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">FutureTask created</text>
+  <text x="160" y="105" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">and queued</text>
+
+  <!-- Arrow from submit to queue -->
+  <line x1="280" y1="85" x2="380" y2="85" stroke="rgb(220, 220, 220)" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="330" y="78" font-size="10" fill="rgb(210, 210, 210)" text-anchor="middle">enqueue</text>
+
+  <!-- Queue (shared) -->
+  <rect x="380" y="70" width="60" height="30" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="2" rx="2"/>
+  <text x="410" y="91" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)">Queue</text>
+
+  <!-- Arrow from queue to dequeue -->
+  <line x1="440" y1="85" x2="520" y2="140" stroke="rgb(220, 220, 220)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- STEP 2: Worker dequeues -->
+  <rect x="420" y="140" width="240" height="50" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="540" y="155" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">dequeue FutureTask</text>
+  <text x="540" y="172" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">and run callable</text>
+
+  <!-- STEP 3: Submit thread continues -->
+  <text x="160" y="160" font-size="10" fill="rgb(210, 210, 210)" font-style="italic">(free to do anything else)</text>
+
+  <!-- STEP 4: Worker runs and writes result -->
+  <rect x="420" y="210" width="240" height="60" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="540" y="225" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">run callable.call()</text>
+  <text x="540" y="242" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">write result to</text>
+  <text x="540" y="257" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">FutureTask state field</text>
+
+  <!-- Vertical line connecting worker steps -->
+  <line x1="540" y1="190" x2="540" y2="210" stroke="rgb(180, 180, 180)" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+
+  <!-- STEP 5: Unpark -->
+  <rect x="420" y="290" width="240" height="40" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="540" y="310" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">unpark any blocked thread</text>
+
+  <!-- Line connecting result write to unpark -->
+  <line x1="540" y1="270" x2="540" y2="290" stroke="rgb(180, 180, 180)" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+
+  <!-- STEP 6: Submit thread calls future.get() -->
+  <rect x="40" y="190" width="240" height="60" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="160" y="205" font-size="11" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">future.get()</text>
+  <text x="160" y="222" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">check state field:</text>
+  <text x="160" y="237" font-size="10" text-anchor="middle" fill="rgb(210, 210, 210)">COMPLETED or NOT YET</text>
+
+  <!-- Arrow connecting submit steps -->
+  <line x1="160" y1="110" x2="160" y2="190" stroke="rgb(180, 180, 180)" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+
+  <!-- Two outcomes from get() -->
+  <!-- Outcome 1: Completed -->
+  <rect x="40" y="280" width="105" height="50" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="92" y="295" font-size="10" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">COMPLETED</text>
+  <text x="92" y="312" font-size="9" text-anchor="middle" fill="rgb(210, 210, 210)">return result</text>
+  <text x="92" y="324" font-size="9" text-anchor="middle" fill="rgb(210, 210, 210)">immediately</text>
+
+  <!-- Outcome 2: Not yet -->
+  <rect x="175" y="280" width="105" height="50" fill="rgb(50, 50, 50)" stroke="rgb(220, 220, 220)" stroke-width="1.5" rx="4"/>
+  <text x="227" y="295" font-size="10" text-anchor="middle" fill="rgb(230, 230, 230)" font-weight="500">NOT YET</text>
+  <text x="227" y="312" font-size="9" text-anchor="middle" fill="rgb(210, 210, 210)">park() thread</text>
+  <text x="227" y="324" font-size="9" text-anchor="middle" fill="rgb(210, 210, 210)">(no CPU spin)</text>
+
+  <!-- Arrows from get() to outcomes -->
+  <line x1="120" y1="250" x2="92" y2="280" stroke="rgb(220, 220, 220)" stroke-width="1.5"/>
+  <line x1="200" y1="250" x2="227" y2="280" stroke="rgb(220, 220, 220)" stroke-width="1.5"/>
+
+  <!-- Arrow from unpark to "NOT YET" outcome (waking up) -->
+  <path d="M 540 330 Q 400 360 280 305" stroke="rgb(220, 220, 220)" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <text x="420" y="355" font-size="9" fill="rgb(210, 210, 210)" text-anchor="middle">wakes up</text>
+
+  <!-- Final outcomes (shown continuing) -->
+  <text x="92" y="370" font-size="9" fill="rgb(210, 210, 210)" text-anchor="middle">Continue execution</text>
+  <text x="227" y="370" font-size="9" fill="rgb(210, 210, 210)" text-anchor="middle">Resume (state now COMPLETED)</text>
+
+  <!-- Legend note -->
+  <text x="40" y="460" font-size="10" fill="rgb(210, 210, 210)">Dashed lines: sequential flow within a thread | Solid arrows: inter-thread communication | Queue: shared data structure</text>
+</svg>

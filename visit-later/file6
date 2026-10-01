@@ -1,0 +1,110 @@
+JVM Stack machine
+
+The JVM's "stack machine" label is about *how instructions name their operands*, and that single design choice explains most of the bytecode format's shape.
+
+## First: two different stacks
+
+Don't conflate them.
+
+- **The JVM stack** (one per thread) holds **frames** — one frame per active method invocation. This is what overflows and gives you `StackOverflowError`.
+- **The operand stack** lives *inside* a single frame. It's the scratch area for expression evaluation within that one method.
+
+"Stack machine" refers to the second one.
+
+## Frame anatomy
+
+Each frame has two storage areas, and the distinction between them is the whole story:The **local variable array** is randomly addressable: `iload_2` means "read slot 2." That is register-like. The **operand stack** is not addressable at all — you can only touch the top. The rule the JVM enforces is that *no computational instruction can read a local variable directly*. You must first `load` it onto the stack, compute, then `store` the result back. That round trip is what makes it a stack machine rather than a register machine.
+
+## What implicit operands buy you
+
+On x86-64, an add looks roughly like `add rax, rbx` — the instruction must encode which registers to read and where to put the answer. Those operand fields cost bytes, and they bake a specific register count into the instruction format.
+
+The JVM's version is `iadd`. One byte. `0x60`. It says nothing about where its inputs are because the answer is always the same: pop the top two, push the sum. Operands are *positional*, not *named*. That's why it's called byte*code* — most instructions are a single opcode byte with no operand fields at all.
+
+The price you pay is a bigger opcode table. Since the operand's location is implicit, the operand's **type** must be baked into the opcode. You don't get one `add`; you get `iadd`, `ladd`, `fadd`, `dadd`. Same for load, store, return, compare, negate, and every conversion pair (`i2l`, `i2f`, `d2i`, …). Most of the ~200 opcodes are that cross product of operation × type.
+
+## Slots, and why `long` is annoying
+
+Both areas are measured in **slots**, each holding one 32-bit-ish value: `int`, `float`, `reference`, or `returnAddress`. `boolean`, `byte`, `short`, and `char` are all widened to `int` on the stack — there is no `badd`.
+
+`long` and `double` occupy **two consecutive slots**. The spec calls these *category 2* computational types, everything else *category 1*. Direct consequences you can observe:
+
+- Local variable indices skip. `void m(long a, int b)` on an instance method gives you `this`=0, `a`=1–2, `b`=3.
+- There are paired stack-manipulation opcodes: `pop`/`pop2`, `dup`/`dup2`, `dup2_x1`, and so on, because "duplicate the top value" is ambiguous until you know the category.
+- `dup_x1` and friends exist precisely because you cannot reach down into the stack — if you need a value that's buried, you must shuffle the top of the stack with these primitives or stash things in locals.
+
+## A trace
+
+```java
+int compute(int a, int b) {
+    int c = a * b + 3;
+    return c;
+}
+```
+
+`javac` emits `max_stack=2, max_locals=4`:
+
+```
+                         operand stack (bottom → top)
+                         []
+iload_1                  [a]
+iload_2                  [a, b]
+imul                     [a*b]
+iconst_3                 [a*b, 3]
+iadd                     [a*b+3]
+istore_3                 []              locals[3] = result
+iload_3                  [c]
+ireturn                  []              value handed to caller's stack
+```
+
+Note two things. First, the expression tree `(a*b)+3` has been flattened into postfix order — a stack machine's instruction sequence *is* the post-order traversal of the expression tree, which is why compiling to bytecode is nearly trivial. Second, `max_stack=2` was computable at compile time, because the depth at every point is statically determined.
+
+## Stack effects aren't always in the opcode
+
+`iadd` is (−2, +1) always. But `invokevirtual` isn't self-describing — its effect depends on the method descriptor it references in the constant pool. For `sb.append(x)`:
+
+```
+aload_1                  [sb]                    receiver
+iload_2                  [sb, x]                 argument
+invokevirtual StringBuilder.append(I)LStringBuilder;
+                         [sb']                   pops 2, pushes return value
+pop                                              if you discard the result
+```
+
+Arguments are pushed left-to-right with the receiver underneath them, and the invoke instruction pops `1 + arity` slots (counting category-2 args as two) and pushes 0 or 1 depending on the return type. So computing stack depth requires resolving descriptors — which the verifier does. A `void` method pushes nothing; that's why statement-expressions with non-void returns get a trailing `pop`.
+
+## Static bounds and verification
+
+`max_stack` and `max_locals` are fields in the `Code` attribute of the class file, not runtime discoveries. This is load-bearing:
+
+- **Fixed frame size.** The JVM knows exactly how many bytes a frame needs before executing a single instruction, so it can allocate the frame in one bump of the stack pointer. No dynamic growth mid-method.
+- **Verifiability.** The bytecode verifier does abstract interpretation over the method, tracking the *type* of every stack slot and local at every instruction. Its key requirement: **at any given instruction, the operand stack must have the same depth and the same types no matter which control-flow path reached it.** You cannot write bytecode where one branch leaves an extra value on the stack. `VerifyError: Inconsistent stack height` is exactly this check firing, and it's the most common bug when hand-generating bytecode with ASM.
+- Since Java 7, methods carry a `StackMapTable` attribute — precomputed stack/local type snapshots at each branch target — so verification is a single linear pass rather than iterative dataflow. That's why bytecode you rewrite at load time must have its stack map frames recomputed (`COMPUTE_FRAMES` in ASM).
+
+One more verifier-adjacent behaviour: when an exception is thrown, **the operand stack of the handler's frame is cleared and the exception object becomes the single element on it.** Any partially-evaluated expression state is discarded. This is why `finally` blocks are compiled by stashing values into synthetic local variable slots — locals survive the transfer to a handler, the operand stack doesn't.
+
+## Why Gosling & Co. chose this
+
+- **Compactness.** Class files were meant to travel over 1990s network links.
+- **No register allocation in the compiler.** `javac` never has to decide which of N registers to use, because the format doesn't expose any. Register allocation is deferred to the JIT, which knows the actual target machine.
+- **Target neutrality.** x86 had 8 general-purpose registers, SPARC had windowed register files, ARM had 16. A stack machine commits to none of them.
+- **Trivially writable interpreter.** A switch loop over opcodes with a push/pop array is something you can implement in an afternoon — which mattered for the "run anywhere, including a toaster" pitch.
+- **Easy verification.** Fixed stack discipline makes type-safety checking a tractable dataflow problem.
+
+## Where the abstraction stops being real
+
+This is the part worth internalising: **the operand stack is a specification device, not a runtime data structure on modern hardware.**
+
+- HotSpot's **template interpreter** does maintain a real operand stack in the frame's memory, but it caches the top-of-stack in a machine register to avoid a memory round-trip per instruction. So even the interpreter cheats.
+- **C1 and C2 don't have an operand stack at all.** They parse bytecode into an SSA-form intermediate representation, where the operand stack's push/pop relationships simply become def-use edges in a graph. `iload_1; iload_2; imul` doesn't produce three operations — it produces one `Mul(a, b)` node. Then register allocation assigns real machine registers, and your `iadd` becomes an `add` on `%eax` — or vanishes entirely into constant folding.
+
+So the stack is how the *program is encoded*, not how it *executes*. The JVM spec is careful to describe an abstract machine; it never mandates that an implementation materialise the stack.
+
+Also, a small correction to the framing: the JVM spec *does* define one register — the per-thread `pc`, holding the address of the current instruction. What it lacks is general-purpose registers for data.
+
+## Where this actually bites you
+
+- Reading `javap -c -v` output becomes mechanical once you internalise stack effects — indispensable for understanding what the compiler did with lambdas (`invokedynamic`), string concatenation (`makeConcatWithConstants` since 9), or switch-on-string (hashcode lookup then equals).
+- Bytecode generation is easy *because* it's a stack machine, which is why the JVM ecosystem is drowning in bytecode manipulation: Lombok, Mockito, Spring's CGLIB proxies, and — relevant to what you've been working through — **Hibernate's bytecode enhancement**. Rewriting a field write into "write field, then call `$$_hibernate_trackChange`" is a local, mechanical edit in stack-machine terms: the value is already on the stack, you `dup` it and route it to the tracker.
+- `StackOverflowError` is about frame count, not `max_stack`. Deep recursion exhausts the thread's JVM stack; nothing you do inside one method's expressions can trigger it.
+- It's why non-Java languages target the JVM so readily. Kotlin, Scala, Clojure, and Groovy all emit this same format — and notably, **Android's Dalvik/ART went the other way** and is register-based, on the theory that a register VM needs fewer instruction dispatches (the expensive part of interpretation) for the same work. WebAssembly and CPython, by contrast, are both stack machines.
