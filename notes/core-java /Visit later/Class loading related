@@ -1,0 +1,8 @@
+Where does the JVM load a .class file into?
+
+Into the JVM's own memory areas — not just "loaded and executed" vaguely. Specifically:
+- Method Area (called Metaspace since Java 8) — stores class-level data: structure, method bytecode, static variables, constant pool.
+- Heap — when you actually do new HelloWorld(), the object lands here. The class metadata and object instances are separate things.
+- Stack — each thread gets its own stack for method calls, local variables.
+
+So "loading a class" and "creating an object of that class" are different steps. Loading puts the class blueprint into Metaspace; new later uses that blueprint to create an object on the Heap.

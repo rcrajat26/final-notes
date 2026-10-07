@@ -1,0 +1,19 @@
+Why is clone() outdated?
+
+A few real problems:
+
+Shallow copy by default — Object.clone() copies fields byte-for-byte. If your class has a reference field (like a List), the clone shares the same underlying object — mutate one, you mutate both.
+Bypasses constructors — clone() doesn't call your class's constructor at all. Any validation/setup logic you wrote there never runs on the cloned object.
+Awkward with final fields — clone() can't easily let you reassign a final field to a proper deep copy during cloning.
+Cloneable is a broken marker interface — it has no methods. It doesn't declare clone(). It just flips a hidden flag; calling clone() on a class that forgot to implement Cloneable throws CloneNotSupportedException — a checked exception, forcing ugly try/catch everywhere.
+
+Modern replacement: copy constructors or static factory methods —
+
+```java
+public Person(Person other) {
+    this.name = other.name;
+    this.age = other.age;
+}
+```
+
+Clear, uses the constructor properly, and you control exactly what's deep-copied vs shared.

@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Java modules: what is blocked, what is allowed</title>
+    <style>
+        :root {
+            --surface-0: #faf9f5;
+            --surface-1: #f3f1ea;
+            --surface-2: #ffffff;
+            --text-primary: #1f1e1d;
+            --text-secondary: #5f5e5a;
+            --border: rgba(31,30,29,0.15);
+            --border-strong: rgba(31,30,29,0.35);
+            --bg-accent: #e6f1fb;
+            --text-accent: #0c447c;
+            --border-accent: #378add;
+            --bg-success: #eaf3de;
+            --text-success: #27500a;
+            --bg-danger: #fcebeb;
+            --text-danger: #791f1f;
+            --radius: 8px;
+            --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --surface-0: #1f1e1d;
+                --surface-1: #2b2a28;
+                --surface-2: #353431;
+                --text-primary: #f1efe8;
+                --text-secondary: #b4b2a9;
+                --border: rgba(241,239,232,0.18);
+                --border-strong: rgba(241,239,232,0.4);
+                --bg-accent: #0c447c;
+                --text-accent: #b5d4f4;
+                --border-accent: #85b7eb;
+                --bg-success: #27500a;
+                --text-success: #c0dd97;
+                --bg-danger: #791f1f;
+                --text-danger: #f7c1c1;
+            }
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 24px 16px 48px;
+            background: var(--surface-0);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            font-size: 16px;
+            line-height: 1.7;
+        }
+        main { max-width: 720px; margin: 0 auto; }
+        h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+        p.lead { margin: 0 0 16px; color: var(--text-secondary); font-size: 15px; }
+
+        svg text { font-family: var(--font-sans); fill: var(--text-primary); }
+        svg .t  { font-size: 14px; }
+        svg .th { font-size: 14px; font-weight: 500; }
+        svg .ts { font-size: 12px; fill: var(--text-secondary); }
+        svg .box { fill: var(--surface-1); stroke: var(--border-strong); }
+        svg .arr { fill: none; stroke: var(--text-secondary); stroke-width: 1.5; stroke-linecap: round; }
+
+        svg .c-teal  > rect, svg rect.c-teal  { fill: #e1f5ee; stroke: #0f6e56; }
+        svg .c-amber > rect, svg rect.c-amber { fill: #faeeda; stroke: #854f0b; }
+        svg .c-gray  > rect, svg rect.c-gray  { fill: #f1efe8; stroke: #5f5e5a; }
+        svg .ts-on-color { fill: #444441; }
+        @media (prefers-color-scheme: dark) {
+            svg rect.c-teal  { fill: #085041; stroke: #5dcaa5; }
+            svg rect.c-amber { fill: #633806; stroke: #ef9f27; }
+            svg rect.c-gray  { fill: #444441; stroke: #b4b2a9; }
+        }
+        svg .pkg-label { font-size: 12px; fill: #1f1e1d; }
+        @media (prefers-color-scheme: dark) { svg .pkg-label { fill: #f1efe8; } }
+
+        .grp { font-size: 12px; color: var(--text-secondary); margin: 12px 0 6px; }
+        .row { display: flex; flex-wrap: wrap; gap: 6px; }
+        .b {
+            font: inherit; font-size: 13px; padding: 6px 10px;
+            border: 0.5px solid var(--border-strong);
+            border-radius: var(--radius);
+            background: var(--surface-2);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .b:hover { border-color: var(--text-primary); }
+        .b:focus-visible { outline: 2px solid var(--border-accent); outline-offset: 2px; }
+        .b.on { background: var(--bg-accent); border-color: var(--border-accent); color: var(--text-accent); }
+
+        .panel {
+            margin-top: 14px;
+            border: 0.5px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: var(--surface-1);
+        }
+        .panel .top { display: flex; gap: 10px; align-items: flex-start; }
+        #badge { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: var(--radius); white-space: nowrap; }
+        #code { font-family: var(--font-mono); font-size: 12px; word-break: break-all; line-height: 1.5; }
+        #why { font-size: 14px; color: var(--text-secondary); margin-top: 8px; line-height: 1.6; }
+        #err { font-family: var(--font-mono); font-size: 12px; color: var(--text-danger); margin-top: 8px; line-height: 1.5; word-break: break-word; }
+
+        pre.mi {
+            margin: 20px 0 0; padding: 12px 14px;
+            background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 12px;
+            font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Java modules: what is blocked, what is allowed</h1>
+    <p class="lead">Pick an access attempt. The arrow shows whether it reaches the class or stops at the module wall.</p>
+
+    <svg width="100%" viewBox="0 0 680 400" role="img">
+        <title>Example bank application with three modules</title>
+        <desc>Module app, module com.bank.core with api, model and internal packages, and module jackson. One access attempt at a time is drawn as an arrow that either reaches its target class or stops at the module wall.</desc>
+        <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+        </defs>
+
+        <rect class="box" x="20" y="150" width="140" height="124" rx="12" stroke-width="0.5"/>
+        <text class="th" x="90" y="172" text-anchor="middle" dominant-baseline="central">module app</text>
+        <rect class="box" x="30" y="190" width="120" height="44" rx="8" stroke-width="0.5"/>
+        <text class="th" x="90" y="212" text-anchor="middle" dominant-baseline="central">Main</text>
+
+        <rect class="box" x="200" y="40" width="280" height="332" rx="16" stroke-width="0.5" stroke-dasharray="4 3"/>
+        <text class="th" x="215" y="58" dominant-baseline="central">module com.bank.core</text>
+
+        <rect class="c-teal" x="215" y="76" width="250" height="84" rx="8" stroke-width="0.5"/>
+        <text class="pkg-label" x="227" y="92" dominant-baseline="central">package com.bank.api · exports</text>
+        <rect id="r-api" class="box" x="235" y="106" width="210" height="44" rx="6" stroke-width="0.5"/>
+        <text class="th" x="340" y="120" text-anchor="middle" dominant-baseline="central">AccountService</text>
+        <text class="ts" x="340" y="138" text-anchor="middle" dominant-baseline="central">public void deposit()</text>
+
+        <rect class="c-amber" x="215" y="176" width="250" height="84" rx="8" stroke-width="0.5"/>
+        <text class="pkg-label" x="227" y="192" dominant-baseline="central">package com.bank.model · opens to jackson</text>
+        <rect id="r-model" class="box" x="235" y="206" width="210" height="44" rx="6" stroke-width="0.5"/>
+        <text class="th" x="340" y="220" text-anchor="middle" dominant-baseline="central">Account</text>
+        <text class="ts" x="340" y="238" text-anchor="middle" dominant-baseline="central">private double balance</text>
+
+        <rect class="c-gray" x="215" y="276" width="250" height="84" rx="8" stroke-width="0.5"/>
+        <text class="pkg-label" x="227" y="292" dominant-baseline="central">package com.bank.internal · no directive</text>
+        <rect id="r-internal" class="box" x="235" y="306" width="210" height="44" rx="6" stroke-width="0.5"/>
+        <text class="th" x="340" y="320" text-anchor="middle" dominant-baseline="central">LedgerEngine</text>
+        <text class="ts" x="340" y="338" text-anchor="middle" dominant-baseline="central">public class</text>
+
+        <rect class="box" x="520" y="150" width="150" height="124" rx="12" stroke-width="0.5"/>
+        <text class="th" x="595" y="172" text-anchor="middle" dominant-baseline="central">module jackson</text>
+        <rect class="box" x="530" y="190" width="130" height="44" rx="8" stroke-width="0.5"/>
+        <text class="th" x="595" y="212" text-anchor="middle" dominant-baseline="central">ObjectMapper</text>
+
+        <line id="ln" class="arr" x1="0" y1="0" x2="0" y2="0" style="stroke-width:2"/>
+        <g id="xm" style="display:none">
+            <line id="x1" class="arr" x1="0" y1="0" x2="0" y2="0" style="stroke:#E24B4A;stroke-width:3"/>
+            <line id="x2" class="arr" x1="0" y1="0" x2="0" y2="0" style="stroke:#E24B4A;stroke-width:3"/>
+        </g>
+    </svg>
+
+    <div class="grp">Code running in module app</div>
+    <div class="row" id="g-app"></div>
+    <div class="grp">Code running in module jackson</div>
+    <div class="row" id="g-jackson"></div>
+
+    <div class="panel" aria-live="polite">
+        <div class="top">
+            <span id="badge"></span>
+            <code id="code"></code>
+        </div>
+        <div id="why"></div>
+        <div id="err"></div>
+    </div>
+
+    <pre class="mi">module com.bank.core {
+    exports com.bank.api;                                      // front door for everyone
+    opens   com.bank.model to com.fasterxml.jackson.databind;  // reflection door, one guest
+    // com.bank.internal: nothing declared
+}
+
+module app {
+    requires com.bank.core;
+}</pre>
+</main>
+
+<script>
+    var S = [
+        { g: 'app', l: 'Call deposit()', t: 'api', ok: 1,
+            code: 'service.deposit(50)',
+            why: 'com.bank.api is exported and deposit() is public, so ordinary code can use it.',
+            err: '' },
+        { g: 'app', l: 'new Account()', t: 'model', ok: 0,
+            code: 'new Account()',
+            why: 'model is opened, not exported. opens only affects reflection at run time. The compiler still treats the package as invisible.',
+            err: 'error: package com.bank.model is declared in module com.bank.core, which does not export it' },
+        { g: 'app', l: 'new LedgerEngine()', t: 'internal', ok: 0,
+            code: 'new LedgerEngine()',
+            why: 'The class is public, but its package has no exports, so no other module can see it. Public only means public inside the module wall.',
+            err: 'error: package com.bank.internal is declared in module com.bank.core, which does not export it' },
+        { g: 'app', l: 'Reflect public method', t: 'api', ok: 1,
+            code: 'AccountService.class.getMethod("deposit", double.class).invoke(svc, 50)',
+            why: 'A public member of an exported package needs no setAccessible, so reflection works like a normal call.',
+            err: '' },
+        { g: 'app', l: 'setAccessible on balance', t: 'model', ok: 0,
+            code: 'Class.forName("com.bank.model.Account").getDeclaredField("balance").setAccessible(true)',
+            why: 'Loading the class and finding the field both succeed. The wall is at setAccessible: the package is opened to jackson, not to app.',
+            err: 'InaccessibleObjectException: Unable to make field private double com.bank.model.Account.balance accessible: module com.bank.core does not "opens com.bank.model" to module app' },
+        { g: 'jackson', l: 'Read Account.balance', t: 'model', ok: 1,
+            code: 'field.setAccessible(true); field.get(account)   // inside ObjectMapper',
+            why: 'opens com.bank.model to jackson.databind names jackson as the one allowed guest, so private fields can be read for JSON.',
+            err: '' },
+        { g: 'jackson', l: 'Read LedgerEngine field', t: 'internal', ok: 0,
+            code: 'Class.forName("com.bank.internal.LedgerEngine").getDeclaredField("entries").setAccessible(true)',
+            why: 'opens works per package. Jackson holds a key to model only, and internal has no directive at all.',
+            err: 'InaccessibleObjectException: module com.bank.core does not "opens com.bank.internal" to module jackson.databind' }
+    ];
+
+    var SRC  = { app: [150, 212], jackson: [530, 212] };
+    var TGT  = { app: { api: [233, 128], model: [233, 224], internal: [233, 320] },
+        jackson: { model: [447, 224], internal: [447, 320] } };
+    var WALL = { app: 200, jackson: 480 };
+    var btns = [];
+
+    function $(id) { return document.getElementById(id); }
+
+    S.forEach(function (s, i) {
+        var b = document.createElement('button');
+        b.className = 'b';
+        b.textContent = s.l;
+        b.onclick = function () { show(i); };
+        $('g-' + s.g).appendChild(b);
+        btns.push(b);
+    });
+
+    function show(i) {
+        var s = S[i], c = s.ok ? '#639922' : '#E24B4A';
+        var a = SRC[s.g], t = TGT[s.g][s.t], ln = $('ln'), xm = $('xm');
+
+        btns.forEach(function (b, j) { b.classList.toggle('on', j === i); });
+
+        ['api', 'model', 'internal'].forEach(function (k) {
+            var r = $('r-' + k); r.style.stroke = ''; r.style.strokeWidth = '';
+        });
+        var r = $('r-' + s.t); r.style.stroke = c; r.style.strokeWidth = '2.5';
+
+        ln.style.stroke = c;
+        ln.setAttribute('x1', a[0]); ln.setAttribute('y1', a[1]);
+
+        if (s.ok) {
+            ln.setAttribute('x2', t[0]); ln.setAttribute('y2', t[1]);
+            ln.setAttribute('marker-end', 'url(#arrow)');
+            ln.style.strokeDasharray = '';
+            xm.style.display = 'none';
+        } else {
+            var w = WALL[s.g], f = (w - a[0]) / (t[0] - a[0]);
+            var px = w, py = a[1] + f * (t[1] - a[1]);
+            ln.setAttribute('x2', px); ln.setAttribute('y2', py);
+            ln.removeAttribute('marker-end');
+            ln.style.strokeDasharray = '5 4';
+            xm.style.display = 'block';
+            var x1 = $('x1'), x2 = $('x2');
+            x1.setAttribute('x1', px - 7); x1.setAttribute('y1', py - 7);
+            x1.setAttribute('x2', px + 7); x1.setAttribute('y2', py + 7);
+            x2.setAttribute('x1', px - 7); x2.setAttribute('y1', py + 7);
+            x2.setAttribute('x2', px + 7); x2.setAttribute('y2', py - 7);
+        }
+
+        var bd = $('badge');
+        bd.textContent = s.ok ? 'Allowed' : 'Blocked';
+        bd.style.background = s.ok ? 'var(--bg-success)' : 'var(--bg-danger)';
+        bd.style.color = s.ok ? 'var(--text-success)' : 'var(--text-danger)';
+        $('code').textContent = s.code;
+        $('why').textContent = s.why;
+        $('err').textContent = s.err;
+    }
+
+    show(1);
+</script>
+</body>
+</html>

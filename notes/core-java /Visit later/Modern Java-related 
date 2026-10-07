@@ -1,0 +1,33 @@
+_ as a variable name -> "unnamed variable"
+
+---
+
+Is there another form of switch?
+
+Yes — switch expressions (arrow syntax, ->, with yield), introduced in Java 14. Example:
+
+```java
+int result = switch (day) {
+    case 1, 2, 3, 4, 5 -> "Weekday";
+    case 6, 7 -> "Weekend";
+    default -> "Invalid";
+};
+```
+
+I called the one we covered "classic switch" deliberately — because this arrow-based version is a Java 8+ feature (technically Java 12–14), and you asked to keep modern Java features out of this syllabus. So it's intentionally excluded here, not forgotten. If you want, we can note it exists for now and cover it properly later when you decide to do the modern-Java module.
+
+
+---
+
+java
+int[] nums = {1, 2, 3};
+List<Integer> list = Arrays.stream(nums).boxed().collect(Collectors.toList());
+
+Arrays.stream(nums) turns the int[] into an IntStream, .boxed() converts each primitive int → Integer, and .collect(Collectors.toList()) gathers them into a proper List<Integer>.
+
+
+---
+
+Records — brief mention only (per course exclusion rule)
+
+Flagging since it's directly relevant: records (Java 16+, excluded from deep coverage here as a modern-Java/full-topic exclusion per your rules) auto-generate equals()/hashCode()/toString() from their declared components, using exactly this same contract-correct field-matching logic — the compiler does by default what you're doing by hand above. Worth knowing that this exists, not going deeper.
